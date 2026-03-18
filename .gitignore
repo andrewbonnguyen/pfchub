@@ -1,10 +1,17 @@
+# Dependencies
 node_modules/
+
+# Backend runtime files
 backend/uploads/
 backend/outputs/
 backend/logs/
 backend/data/
 backend/.env
+
+# Frontend build
+frontend/dist/
+
+# OS
 .DS_Store
 *.log
-dist/
 .env
