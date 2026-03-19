@@ -1,7 +1,7 @@
 const express = require('express');
 const multer  = require('multer');
 const path    = require('path');
-const fs      = require('fs');
+const fs      = require('fs');          // ← phải ở đây, không phải cuối file
 const crypto  = require('crypto');
 const router  = express.Router();
 
@@ -12,15 +12,15 @@ const { logger }               = require('../services/logger');
 
 const upload = multer({
   dest:   path.join(__dirname, '..', 'uploads'),
-  limits: { fileSize: 50 * 1024 * 1024 }
+  limits: { fileSize: 50 * 1024 * 1024 },  // 50MB
 });
 
-// GET /api/glossary
+// ── GET /api/glossary — danh sách phân trang + tìm kiếm ──────────────────────
 router.get('/', (req, res) => {
   try {
     const { page = 1, limit = 50, search = '' } = req.query;
     const glossary = readGlossary();
-    let entries = glossary.entries;
+    let entries    = glossary.entries;
 
     if (search) {
       const q = search.toLowerCase();
@@ -39,7 +39,7 @@ router.get('/', (req, res) => {
     res.json({
       entries: entries.slice(start, start + limitNum),
       total, page: pageNum, limit: limitNum,
-      pages: Math.ceil(total / limitNum)
+      pages: Math.ceil(total / limitNum) || 1,
     });
   } catch (err) {
     logger.error('GET /glossary', { error: err.message });
@@ -47,13 +47,13 @@ router.get('/', (req, res) => {
   }
 });
 
-// GET /api/glossary/stats
+// ── GET /api/glossary/stats ───────────────────────────────────────────────────
 router.get('/stats', (req, res) => {
   try { res.json(getStats()); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST /api/glossary/entry  — thêm mới hoặc cập nhật (nếu có id)
+// ── POST /api/glossary/entry — thêm mới hoặc cập nhật (nếu có id) ────────────
 router.post('/entry', (req, res) => {
   try {
     const { en, zh, vi, id } = req.body;
@@ -63,31 +63,38 @@ router.post('/entry', (req, res) => {
       const idx = glossary.entries.findIndex(e => String(e.id) === String(id));
       if (idx !== -1) {
         glossary.entries[idx] = {
-          ...glossary.entries[idx], en, zh, vi,
-          updatedAt: new Date().toISOString()
+          ...glossary.entries[idx],
+          en:        en || '',
+          zh:        zh || '',
+          vi:        vi || '',
+          updatedAt: new Date().toISOString(),
         };
         writeGlossary(glossary);
         return res.json({ success: true, entry: glossary.entries[idx] });
       }
     }
 
+    // Thêm entry mới
     const newEntry = {
       id:        crypto.randomUUID(),
-      en:        en || '', zh: zh || '', vi: vi || '',
+      en:        en || '',
+      zh:        zh || '',
+      vi:        vi || '',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      source:    'manual'
+      source:    'manual',
     };
     glossary.entries.push(newEntry);
     writeGlossary(glossary);
     addHistoryRecord({ action: 'glossary_add', fileName: 'manual', details: `Added: ${en || zh}` });
     res.json({ success: true, entry: newEntry });
   } catch (err) {
+    logger.error('POST /glossary/entry', { error: err.message });
     res.status(500).json({ error: err.message });
   }
 });
 
-// DELETE /api/glossary/entry/:id
+// ── DELETE /api/glossary/entry/:id ───────────────────────────────────────────
 router.delete('/entry/:id', (req, res) => {
   try {
     const glossary = readGlossary();
@@ -100,12 +107,11 @@ router.delete('/entry/:id', (req, res) => {
   }
 });
 
-// POST /api/glossary/scan  — quét file Excel lấy thuật ngữ
+// ── POST /api/glossary/scan — quét file Excel lấy thuật ngữ ──────────────────
 router.post('/scan', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     logger.info(`Scanning: ${req.file.originalname}`);
-
     const terms    = await scanExcelForGlossary(req.file.path);
     const glossary = readGlossary();
     let added = 0;
@@ -119,10 +125,12 @@ router.post('/scan', upload.single('file'), async (req, res) => {
       if (!exists) {
         glossary.entries.push({
           id:        crypto.randomUUID(),
-          en:        term.en || '', zh: term.zh || '', vi: '',
+          en:        term.en || '',
+          zh:        term.zh || '',
+          vi:        '',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          source:    'scanned'
+          source:    'scanned',
         });
         added++;
       }
@@ -132,50 +140,56 @@ router.post('/scan', upload.single('file'), async (req, res) => {
     addHistoryRecord({
       action:   'glossary_scan',
       fileName: req.file.originalname,
-      details:  `Found ${terms.length} pairs, added ${added} new`
+      details:  `Found ${terms.length} pairs, added ${added} new`,
     });
+    // Xoá file tạm
     try { fs.unlinkSync(req.file.path); } catch {}
     res.json({ success: true, extracted: terms.length, added, total: glossary.entries.length });
   } catch (err) {
     logger.error('Scan error', { error: err.message });
+    try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/glossary/import-translated  — import file đã dịch
+// ── POST /api/glossary/import-translated — import file đã dịch ───────────────
 router.post('/import-translated', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const { sourceCol = 'A', translatedCol = 'B', lang = 'vi', sheetIndex = 0 } = req.body;
-
     const ExcelJS = require('exceljs');
     const wb      = new ExcelJS.Workbook();
     await wb.xlsx.readFile(req.file.path);
+
     const sheet   = wb.worksheets[parseInt(sheetIndex)] || wb.worksheets[0];
+    if (!sheet) throw new Error('Không tìm thấy sheet trong file');
 
     const entries = [];
     sheet.eachRow({ includeEmpty: false }, (row, ri) => {
-      if (ri === 1) return;
-      const src   = row.getCell(sourceCol).text;
-      const trans = row.getCell(translatedCol).text;
-      if (src && trans) entries.push({ source: src, translated: trans, lang });
+      if (ri === 1) return;                    // bỏ header
+      const src   = row.getCell(sourceCol).text || '';
+      const trans = row.getCell(translatedCol).text || '';
+      if (src.trim() && trans.trim()) {
+        entries.push({ source: src.trim(), translated: trans.trim(), lang });
+      }
     });
 
     const result = await buildFromTranslatedExcel(entries);
     addHistoryRecord({
       action:   'glossary_import',
       fileName: req.file.originalname,
-      details:  `${entries.length} pairs, +${result.added} new, ${result.updated} updated`
+      details:  `${entries.length} pairs, +${result.added} new, ${result.updated} updated`,
     });
     try { fs.unlinkSync(req.file.path); } catch {}
     res.json({ success: true, ...result });
   } catch (err) {
     logger.error('Import error', { error: err.message });
+    try { if (req.file) fs.unlinkSync(req.file.path); } catch {}
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/glossary/bulk
+// ── PUT /api/glossary/bulk ────────────────────────────────────────────────────
 router.put('/bulk', (req, res) => {
   try {
     const { entries } = req.body;
