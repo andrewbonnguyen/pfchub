@@ -1,16 +1,16 @@
 require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
+const express    = require('express');
+const cors       = require('cors');
 const bodyParser = require('body-parser');
-const path = require('path');
-const fs = require('fs');
-const { logger } = require('./services/logger');
+const path       = require('path');
+const fs         = require('fs');
+const { logger }        = require('./services/logger');
 const { requestLogger } = require('./middleware/requestLogger');
 
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// ── Tạo thư mục cần thiết (Render ephemeral FS) ───────────────────────────────
+// ── Tạo thư mục cần thiết ─────────────────────────────────────────────────────
 const DATA_DIR   = process.env.DATA_DIR || path.join(__dirname, 'data');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const OUTPUT_DIR = path.join(__dirname, 'outputs');
@@ -20,7 +20,7 @@ const LOG_DIR    = path.join(__dirname, 'logs');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// ── Khởi tạo file data nếu chưa có ───────────────────────────────────────────
+// ── Khởi tạo file data nếu chưa có ──────────────────────────────────────────
 const glossaryPath = path.join(DATA_DIR, 'glossary.json');
 if (!fs.existsSync(glossaryPath)) {
   fs.writeFileSync(glossaryPath, JSON.stringify(
@@ -34,9 +34,10 @@ if (!fs.existsSync(historyPath)) {
   fs.writeFileSync(historyPath, JSON.stringify({ records: [] }, null, 2));
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// ── CORS ──────────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'] }));
 app.options('*', cors());
+
 app.use(bodyParser.json({ limit: '50mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 app.use(requestLogger);
@@ -48,13 +49,14 @@ app.use('/api/translate', require('./routes/translate'));
 app.use('/api/history',   require('./routes/history'));
 app.use('/api/logs',      require('./routes/logs'));
 
+// ── Health check — dùng GEMINI_API_KEY ───────────────────────────────────────
 app.get('/api/health', (req, res) => {
   res.json({
     status:    'ok',
     version:   '1.0.0',
     timestamp: new Date().toISOString(),
     env:       process.env.NODE_ENV || 'development',
-    hasApiKey: !!process.env.ANTHROPIC_API_KEY
+    hasApiKey: !!process.env.GEMINI_API_KEY,   // ← GEMINI, không phải ANTHROPIC
   });
 });
 
@@ -64,22 +66,20 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-// ── Khởi động ─────────────────────────────────────────────────────────────────
-// Bật garbage collection thủ công (cần flag --expose-gc)
+// ── Bật GC thủ công nếu có flag --expose-gc ──────────────────────────────────
 if (global.gc) {
   setInterval(() => {
     const before = process.memoryUsage().heapUsed;
     global.gc();
-    const after  = process.memoryUsage().heapUsed;
-    const freed  = Math.round((before - after) / 1024 / 1024);
-    if (freed > 0) logger.info(`GC: freed ${freed}MB RAM`);
-  }, 60000); // chạy GC mỗi 60s
+    const freed = Math.round((before - process.memoryUsage().heapUsed) / 1024 / 1024);
+    if (freed > 0) logger.info(`GC: freed ${freed}MB`);
+  }, 60000);
 }
 
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`PFCHub backend running on port ${PORT}`);
   console.log(`✅ PFCHub Backend → http://localhost:${PORT}`);
-  console.log(`   API Key: ${process.env.ANTHROPIC_API_KEY ? '✓ set' : '✗ MISSING – set ANTHROPIC_API_KEY'}`);
+  console.log(`   Gemini API Key: ${process.env.GEMINI_API_KEY ? '✓ set' : '✗ MISSING – set GEMINI_API_KEY'}`);
 });
 
 module.exports = app;
